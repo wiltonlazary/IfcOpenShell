@@ -30,15 +30,37 @@ bl_info = {
 
 import importlib
 import logging
+import types
+import bpy
 
 logger = logging.getLogger("sverchok.ifc")
+
+
+def get_blender_addon_package_by_name(addon_name: str) -> types.ModuleType:
+    # Check for legacy addons.
+    if addon_name in bpy.context.preferences.addons:
+        return importlib.import_module(addon_name)
+    elif bpy.app.version < (4, 2, 0):
+        raise ModuleNotFoundError
+
+    # Check for Blender extensions.
+    addon_package = None
+    for package_name in bpy.context.preferences.addons.keys():
+        if package_name.endswith(f".{addon_name}"):
+            try:
+                addon_package = importlib.import_module(package_name)
+            except ModuleNotFoundError:
+                pass
+    if addon_package is None:
+        raise ModuleNotFoundError
+    return addon_package
 
 
 def ensure_addons_are_enabled(*addon_names: str) -> None:
     errors = []
     for addon_name in addon_names:
         try:
-            module = importlib.import_module(addon_name)
+            module = get_blender_addon_package_by_name(addon_name)
             # `__addon_enabled__` is not present if addon wasn't enabled before
             if not getattr(module, "__addon_enabled__", False):
                 errors.append(f"- Addon {addon_name} appears to be disabled, it should be enabled before IFC Sverchok.")
@@ -49,7 +71,7 @@ def ensure_addons_are_enabled(*addon_names: str) -> None:
         raise Exception("Some issues were found trying to enable IFC Sverchok:\n" + "\n".join(errors))
 
 
-ensure_addons_are_enabled("blenderbim", "sverchok")
+ensure_addons_are_enabled("bonsai", "sverchok")
 
 
 from sverchok.ui.nodeview_space_menu import add_node_menu
@@ -115,7 +137,6 @@ imported_modules = make_node_list()
 
 reload_event = False
 
-import bpy
 from os.path import splitext
 import ifcopenshell
 import ifcopenshell.api

@@ -59,7 +59,7 @@ IfcSchema::IfcProduct::list::ptr mapping::products_represented_by(const IfcSchem
 
         // IfcProductRepresentation also lacks the INVERSE relation to IfcProduct
         // Let's find the IfcProducts that reference the IfcProductRepresentation anyway
-        products->push((*it)->data().getInverse((&IfcSchema::IfcProduct::Class()), -1)->as<IfcSchema::IfcProduct>());
+        products->push((*it)->file_->getInverse((*it)->id(), &IfcSchema::IfcProduct::Class(), -1)->as<IfcSchema::IfcProduct>());
     }
 
     if (only_direct) {
@@ -81,13 +81,13 @@ IfcSchema::IfcProduct::list::ptr mapping::products_represented_by(const IfcSchem
                     continue;
                 }
 
-                IfcSchema::IfcRepresentation::list::ptr reps = item->data().getInverse((&IfcSchema::IfcRepresentation::Class()), -1)->as<IfcSchema::IfcRepresentation>();
+                IfcSchema::IfcRepresentation::list::ptr reps = item->file_->getInverse(item->id(), (&IfcSchema::IfcRepresentation::Class()), -1)->as<IfcSchema::IfcRepresentation>();
                 for (IfcSchema::IfcRepresentation::list::it jt = reps->begin(); jt != reps->end(); ++jt) {
                     IfcSchema::IfcRepresentation* rep = *jt;
                     if (rep->Items()->size() != 1) continue;
                     IfcSchema::IfcProductRepresentation::list::ptr prodreps_mapped = rep->OfProductRepresentation();
                     for (IfcSchema::IfcProductRepresentation::list::it kt = prodreps_mapped->begin(); kt != prodreps_mapped->end(); ++kt) {
-                        IfcSchema::IfcProduct::list::ptr ps = (*kt)->data().getInverse((&IfcSchema::IfcProduct::Class()), -1)->as<IfcSchema::IfcProduct>();
+                        IfcSchema::IfcProduct::list::ptr ps = (*kt)->file_->getInverse((*kt)->id(), (&IfcSchema::IfcProduct::Class()), -1)->as<IfcSchema::IfcProduct>();
                         products->push(ps);
                     }
                 }
@@ -273,7 +273,7 @@ const IfcUtil::IfcBaseEntity* mapping::get_product_type(const IfcUtil::IfcBaseEn
         }
 #endif
         // Avoid segfault if RelatingType is unset.
-        if (rel->get("RelatingType")->isNull()){
+        if (rel->get("RelatingType").isNull()){
             break;
             return nullptr;
         }
@@ -299,14 +299,45 @@ const IfcUtil::IfcBaseEntity* mapping::get_single_material_association(const Ifc
             single_material = associated_material->as<IfcSchema::IfcMaterial>();
             // NB: Single-layer layersets are also considered, regardless of --enable-layerset-slicing, this
             // in accordance with other viewers.
-            if (!single_material && associated_material->as<IfcSchema::IfcMaterialLayerSetUsage>()) {
-                IfcSchema::IfcMaterialLayerSet* layerset = associated_material->as<IfcSchema::IfcMaterialLayerSetUsage>()->ForLayerSet();
-                if (settings_.get<settings::LayersetFirst>().value ? layerset->MaterialLayers()->size() >= 1 : layerset->MaterialLayers()->size() == 1) {
-                    IfcSchema::IfcMaterialLayer* layer = (*layerset->MaterialLayers()->begin());
-                    if (layer->Material()) {
-                        single_material = layer->Material();
+            if (!single_material) {
+                if (associated_material->as<IfcSchema::IfcMaterialLayerSetUsage>() || associated_material->as<IfcSchema::IfcMaterialLayerSet>()) {
+                    IfcSchema::IfcMaterialLayerSet* layerset;
+                    if (auto *m = associated_material->as<IfcSchema::IfcMaterialLayerSetUsage>()) {
+                        if (m->get("ForLayerSet").isNull()) {
+                            Logger::Warning("Missing ForLayerSet for:", m);
+                            return nullptr;
+                        }
+                        layerset = m->ForLayerSet();
+                    } else {
+                        layerset = associated_material->as<IfcSchema::IfcMaterialLayerSet>();
+                    }
+                    if (settings_.get<settings::LayersetFirst>().value ? layerset->MaterialLayers()->size() >= 1 : layerset->MaterialLayers()->size() == 1) {
+                        IfcSchema::IfcMaterialLayer* layer = (*layerset->MaterialLayers()->begin());
+                        if (auto *m_ = layer->Material()) {
+                            single_material = m_;
+                        }
                     }
                 }
+#ifdef SCHEMA_HAS_IfcMaterialProfileSet
+                if (associated_material->as<IfcSchema::IfcMaterialProfileSetUsage>() || associated_material->as<IfcSchema::IfcMaterialProfileSet>()) {
+                    IfcSchema::IfcMaterialProfileSet* profileset;
+                    if (auto* m = associated_material->as<IfcSchema::IfcMaterialProfileSetUsage>()) {
+                        if (m->get("ForProfileSet").isNull()) {
+                            Logger::Warning("Missing ForProfileSet for:", m);
+                            return nullptr;
+                        }
+                        profileset = m->ForProfileSet();
+                    } else {
+                        profileset = associated_material->as<IfcSchema::IfcMaterialProfileSet>();
+                    }
+                    if (settings_.get<settings::LayersetFirst>().value ? profileset->MaterialProfiles()->size() >= 1 : profileset->MaterialProfiles()->size() == 1) {
+                        IfcSchema::IfcMaterialProfile* profile = (*profileset->MaterialProfiles()->begin());
+                        if (auto *m_ = profile->Material()) {
+                            single_material = m_;
+                        }
+                    }
+                }
+#endif
             }
         }
     }
@@ -341,10 +372,10 @@ namespace {
             return item;
         }
 
-        while (item->declaration().is(IfcSchema::IfcBooleanClippingResult::Class())) {
+        while (auto booleanresult = item->as<IfcSchema::IfcBooleanClippingResult>()) {
             // All instantiations of IfcBooleanOperand (type of FirstOperand) are subtypes of
             // IfcGeometricRepresentationItem
-            item = (IfcSchema::IfcGeometricRepresentationItem*) ((IfcSchema::IfcBooleanClippingResult*) item)->FirstOperand();
+            item = booleanresult->FirstOperand()->as<IfcSchema::IfcRepresentationItem>();
             if (item->StyledByItem()->size()) {
                 return item;
             }
@@ -492,7 +523,7 @@ taxonomy::ptr mapping::map_impl(const IfcSchema::IfcMaterial* material) {
         material_style->name = material->Name();
     } else {
         std::ostringstream oss;
-        oss << material->declaration().name() << "-" << material->data().id();
+        oss << material->declaration().name() << "-" << material->id();
         material_style->name = oss.str();
     }
     return material_style;
@@ -522,7 +553,7 @@ taxonomy::ptr mapping::map_impl(const IfcSchema::IfcStyledItem* inst) {
     } else {
         std::ostringstream oss;
         if (shading) {
-            oss << shading->declaration().name() << "-" << shading->data().id();
+            oss << shading->declaration().name() << "-" << shading->id();
         } else {
             oss << "-";
         }
@@ -581,6 +612,7 @@ taxonomy::ptr mapping::map_impl(const IfcSchema::IfcStyledItem* inst) {
 taxonomy::ptr mapping::map(const IfcBaseInterface* inst) {
     auto iden = inst->as<IfcUtil::IfcBaseClass>()->identity();
     if (use_caching_) {
+        std::lock_guard<std::mutex> guard(cache_guard_);
         auto it = cache_.find(iden);
         if (it != cache_.end()) {
             return it->second;
@@ -598,7 +630,8 @@ taxonomy::ptr mapping::map(const IfcBaseInterface* inst) {
 
     if (item) {
         if (use_caching_) {
-            cache_.insert({ iden, item });
+            std::lock_guard<std::mutex> guard(cache_guard_);
+            cache_.insert({iden, item});
         }
     } else if (!matched) {
         Logger::Message(Logger::LOG_ERROR, "No operation defined for:", inst);
@@ -660,8 +693,8 @@ IfcUtil::IfcBaseEntity* mapping::get_decomposing_entity(const IfcUtil::IfcBaseEn
 
     /* Parent decompositions to the RelatingObject */
     if (!parent) {
-        aggregate_of_instance::ptr parents = product->data().getInverse((&IfcSchema::IfcRelAggregates::Class()), -1);
-        parents->push(product->data().getInverse((&IfcSchema::IfcRelNests::Class()), -1));
+        aggregate_of_instance::ptr parents = product->file_->getInverse(product->id(), (&IfcSchema::IfcRelAggregates::Class()), -1);
+        parents->push(product->file_->getInverse(product->id(), (&IfcSchema::IfcRelNests::Class()), -1));
         for (aggregate_of_instance::it it = parents->begin(); it != parents->end(); ++it) {
             IfcSchema::IfcRelDecomposes* decompose = (*it)->as<IfcSchema::IfcRelDecomposes>();
             IfcUtil::IfcBaseEntity* ifc_objectdef;
@@ -697,12 +730,22 @@ void mapping::initialize_units_() {
     angle_unit_ = -1.;
     length_unit_name_ = "METER";
     
-    auto unit_assignments = file_->instances_by_type<IfcSchema::IfcUnitAssignment>();
-    if (unit_assignments->size() != 1) {
-        Logger::Warning("Not a single unit assignment in file");
+#ifdef SCHEMA_HAS_IfcContext
+    auto projects = file_->instances_by_type<IfcSchema::IfcContext>();
+#else
+    auto projects = file_->instances_by_type<IfcSchema::IfcProject>();
+#endif
+    IfcSchema::IfcUnitAssignment* unit_assignment = nullptr;
+    if (projects->size() == 1) {
+        auto* project = *projects->begin();
+        unit_assignment = project->UnitsInContext();
+    } else {
+        Logger::Warning("Not a single project or context in file");
+    }
+    if (unit_assignment == nullptr) {
+        Logger::Warning("Unable to detect unit information");
         return;
     }
-    auto unit_assignment = *unit_assignments->begin();
 
     bool length_unit_encountered = false, angle_unit_encountered = false;
 
@@ -756,6 +799,14 @@ void mapping::initialize_units_() {
     if (!angle_unit_encountered) {
         Logger::Warning("No plane angle unit encountered");
     }
+
+    // @todo move to a more descriptive function
+    if (settings_.get<settings::BuildingLocalPlacement>().get()) {
+        placement_rel_to_type_ = file_->schema()->declaration_by_name("IfcBuilding");
+    }
+    if (settings_.get<settings::SiteLocalPlacement>().get()) {
+        placement_rel_to_type_ = file_->schema()->declaration_by_name("IfcSite");
+    }
 }
 
 void mapping::initialize_settings() {
@@ -776,11 +827,11 @@ void mapping::initialize_settings() {
         // See if there is a context_id filter and whether the context is selected
         if (settings_.get<settings::ContextIds>().has()) {
             auto cids = settings_.get<settings::ContextIds>().get();
-            if (cids.find(context->data().id()) == cids.end()) {
+            if (cids.find(context->id()) == cids.end()) {
                 bool selected_sub_context = false;
                 auto subs = context->HasSubContexts();
                 for (auto& sub : *subs) {
-                    if (cids.find(context->data().id()) != cids.end()) {
+                    if (cids.find(context->id()) != cids.end()) {
                         selected_sub_context = true;
                         break;
                     }

@@ -6,6 +6,8 @@
 #include "../../ifcparse/IfcFile.h"
 #include "../../ifcparse/IfcLogger.h"
 
+#include <mutex>
+
 #define INCLUDE_SCHEMA(x) STRINGIFY(../../ifcparse/x.h)
 #include INCLUDE_SCHEMA(IfcSchema)
 #undef INCLUDE_SCHEMA
@@ -24,6 +26,7 @@ namespace geometry {
 		std::string length_unit_name_;
 
 		std::map<uint32_t, ifcopenshell::geometry::taxonomy::ptr> cache_;
+      std::mutex cache_guard_; // provides mutually exclusive access to cache_
 
 		const IfcParse::declaration* placement_rel_to_type_;
 		const IfcUtil::IfcBaseEntity* placement_rel_to_instance_;
@@ -49,7 +52,7 @@ namespace geometry {
 						try {
 							if (inst->as<IfcSchema::IfcRepresentationItem>() && !inst->as<IfcSchema::IfcStyledItem>() &&
 								/* @todo */
-								(item->kind() == taxonomy::SOLID || item->kind() == taxonomy::SHELL || item->kind() == taxonomy::COLLECTION || item->kind() == taxonomy::EXTRUSION)
+								(item->kind() == taxonomy::SOLID || item->kind() == taxonomy::SHELL || item->kind() == taxonomy::COLLECTION || item->kind() == taxonomy::EXTRUSION || item->kind() == taxonomy::LOFT || item->kind() == taxonomy::BOOLEAN_RESULT || item->kind() == taxonomy::REVOLVE || item->kind() == taxonomy::SWEEP_ALONG_CURVE)
 								) {
 								auto style = find_style(inst->as<IfcSchema::IfcRepresentationItem>());
 								if (style) {

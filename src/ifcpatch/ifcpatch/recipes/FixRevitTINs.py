@@ -70,7 +70,7 @@ class Patcher:
     def patch(self):
         import bpy
         import bmesh
-        import blenderbim.tool as tool
+        import bonsai.tool as tool
         from math import degrees
 
         bpy.context.scene.BIMProjectProperties.should_use_native_meshes = True
@@ -100,7 +100,7 @@ class Patcher:
                     if face.normal.z < 0.5:
                         faces_to_delete.append(face)
 
-            bmesh.ops.delete(bm, geom=faces_to_delete, context='FACES_ONLY')
+            bmesh.ops.delete(bm, geom=faces_to_delete, context="FACES_ONLY")
 
             bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.01)
             bmesh.ops.triangulate(bm, faces=bm.faces[:], quad_method="BEAUTY", ngon_method="BEAUTY")
